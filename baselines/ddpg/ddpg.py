@@ -12,8 +12,11 @@ import baselines.common.tf_util as U
 
 from baselines import logger
 import numpy as np
-from mpi4py import MPI
 
+try:
+    from mpi4py import MPI
+except ImportError:
+    MPI = None
 
 def learn(network, env,
           seed=None,
@@ -49,7 +52,11 @@ def learn(network, env,
     else:
         nb_epochs = 500
 
-    rank = MPI.COMM_WORLD.Get_rank()
+    if MPI is not None:
+        rank = MPI.COMM_WORLD.Get_rank()
+    else:
+        rank = 0
+
     nb_actions = env.action_space.shape[-1]
     assert (np.abs(env.action_space.low) == env.action_space.high).all()  # we assume symmetric actions.
 
@@ -59,7 +66,6 @@ def learn(network, env,
 
     action_noise = None
     param_noise = None
-    nb_actions = env.action_space.shape[-1]
     if noise_type is not None:
         for current_noise_type in noise_type.split(','):
             current_noise_type = current_noise_type.strip()
@@ -200,14 +206,20 @@ def learn(network, env,
                             eval_episode_rewards_history.append(eval_episode_reward[d])
                             eval_episode_reward[d] = 0.0
 
-        mpi_size = MPI.COMM_WORLD.Get_size()
+        if MPI is not None:
+            mpi_size = MPI.COMM_WORLD.Get_size()
+        else:
+            mpi_size = 1
+
         # Log stats.
         # XXX shouldn't call np.mean on variable length lists
         duration = time.time() - start_time
         stats = agent.get_stats()
         combined_stats = stats.copy()
         combined_stats['rollout/return'] = np.mean(epoch_episode_rewards)
+        combined_stats['rollout/return_std'] = np.std(epoch_episode_rewards)
         combined_stats['rollout/return_history'] = np.mean(episode_rewards_history)
+        combined_stats['rollout/return_history_std'] = np.std(episode_rewards_history)
         combined_stats['rollout/episode_steps'] = np.mean(epoch_episode_steps)
         combined_stats['rollout/actions_mean'] = np.mean(epoch_actions)
         combined_stats['rollout/Q_mean'] = np.mean(epoch_qs)
@@ -234,7 +246,10 @@ def learn(network, env,
             else:
                 raise ValueError('expected scalar, got %s'%x)
 
-        combined_stats_sums = MPI.COMM_WORLD.allreduce(np.array([ np.array(x).flatten()[0] for x in combined_stats.values()]))
+        combined_stats_sums = np.array([ np.array(x).flatten()[0] for x in combined_stats.values()])
+        if MPI is not None:
+            combined_stats_sums = MPI.COMM_WORLD.allreduce(combined_stats_sums)
+
         combined_stats = {k : v / mpi_size for (k,v) in zip(combined_stats.keys(), combined_stats_sums)}
 
         # Total statistics.
